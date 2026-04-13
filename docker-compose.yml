@@ -1,0 +1,63 @@
+# Docker Compose for SuperGemma4-26B-Abliterated-Multimodal-NVFP4
+# Optimized for NVIDIA DGX Spark (GB10, SM 12.1) — uses native FP4 via FLASHINFER_CUTLASS
+#
+# Usage:
+#   1. Download model:
+#      huggingface-cli download AEON-7/supergemma4-26b-abliterated-multimodal-nvfp4 --local-dir ./model
+#   2. Update the volume path below to point to your model directory
+#   3. docker compose up -d
+#
+# This container includes patched modelopt.py with:
+#   - FP8 NaN scrubbing (ModelOpt 0.42.0 quantizer bug fix)
+#   - NVFP4_AWQ quant_algo support
+#   - AWQ pre_quant_scale handling
+#   - Non-streaming reasoning parser fix
+
+services:
+  vllm:
+    image: ghcr.io/aeon-7/vllm-spark-gemma4-nvfp4-awq:latest
+    container_name: vllm-supergemma4-26b-nvfp4
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - VLLM_TEST_FORCE_FP8_MARLIN=1
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      - VLLM_USE_FLASHINFER_MOE_FP4=1
+      - TORCH_MATMUL_PRECISION=high
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - NVIDIA_FORWARD_COMPAT=1
+    volumes:
+      # Update this path to your model directory
+      - ./model:/models/supergemma4
+      - ./modelopt_patched.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/quantization/modelopt.py
+      - ./serving_chat_patched.py:/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/chat_completion/serving.py
+    command:
+      - bash
+      - -c
+      - |
+        exec vllm serve /models/supergemma4 \
+          --served-model-name supergemma4-26b \
+          --quantization modelopt \
+          --dtype auto \
+          --kv-cache-dtype fp8_e4m3 \
+          --calculate-kv-scales \
+          --tensor-parallel-size 1 \
+          --max-model-len 65536 \
+          --max-num-seqs 4 \
+          --gpu-memory-utilization 0.90 \
+          --trust-remote-code \
+          --host 0.0.0.0 --port 8000 \
+          --enable-chunked-prefill \
+          --enable-prefix-caching \
+          --enable-auto-tool-choice \
+          --tool-call-parser gemma4 \
+          --reasoning-parser gemma4
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
