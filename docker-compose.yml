@@ -23,7 +23,10 @@ services:
       - VLLM_TEST_FORCE_FP8_MARLIN=1
       - VLLM_MARLIN_USE_ATOMIC_ADD=1
       - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
-      - VLLM_USE_FLASHINFER_MOE_FP4=1
+      # VLLM_USE_FLASHINFER_MOE_FP4=1 disabled — FlashInfer NVFP4 MoE doesn't
+      # support SuperGemma4's MoE geometry (intermediate_size=704/expert isn't a
+      # supported FlashInfer tile size). vLLM falls back to CUTLASS or TRITON
+      # NVFP4 MoE automatically, which handle arbitrary sizes.
       - TORCH_MATMUL_PRECISION=high
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - NVIDIA_FORWARD_COMPAT=1
@@ -32,6 +35,11 @@ services:
       - ./model:/models/supergemma4
       - ./modelopt_patched.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/quantization/modelopt.py
       - ./serving_chat_patched.py:/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/chat_completion/serving.py
+      # Patched gemma4.py: handles modelopt-style per-expert NVFP4 suffixes
+      # (weight, weight_scale, weight_scale_2, input_scale) in expert tensor
+      # routing. Required even for v6 plain NVFP4 — upstream vLLM's Gemma4
+      # expert_params_mapping doesn't know the modelopt suffix set yet.
+      - ./gemma4_patched.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/gemma4.py
     command:
       - bash
       - -c
@@ -41,7 +49,6 @@ services:
           --quantization modelopt \
           --dtype auto \
           --kv-cache-dtype fp8_e4m3 \
-          --calculate-kv-scales \
           --tensor-parallel-size 1 \
           --max-model-len 65536 \
           --max-num-seqs 4 \

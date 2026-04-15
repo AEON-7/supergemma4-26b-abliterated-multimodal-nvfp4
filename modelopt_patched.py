@@ -1341,8 +1341,13 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
                 hidden_size // 2,
                 dtype=weight_dtype,
             ),
-            input_dim=1,
-            output_dim=2,
+            # Shape [E, 2I, H/2]: dim 1 is the stacked output (gate+up),
+            # dim 2 is the packed input. The FusedMoE weight_loader derives
+            # shard_dim from output_dim for w1/w3 shards, so getting these
+            # right matters — had them flipped previously, which caused
+            # `_load_w13` to narrow the wrong axis and trip a shape mismatch.
+            input_dim=2,
+            output_dim=1,
             weight_loader=weight_loader,
         )
         layer.register_parameter("w13_weight", w13_weight)
@@ -1356,8 +1361,10 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
                 intermediate_size_per_partition // 2,
                 dtype=weight_dtype,
             ),
-            input_dim=1,
-            output_dim=2,
+            # Shape [E, H, I/2]: dim 1 is the output (hidden), dim 2 is the
+            # packed input (intermediate).
+            input_dim=2,
+            output_dim=1,
             weight_loader=weight_loader,
         )
         layer.register_parameter("w2_weight", w2_weight)
@@ -1370,8 +1377,9 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
                 hidden_size // self.quant_config.group_size,
                 dtype=weight_scale_dtype,
             ),
-            input_dim=1,
-            output_dim=2,
+            # Same axis convention as w13_weight.
+            input_dim=2,
+            output_dim=1,
             weight_loader=weight_loader,
         )
         layer.register_parameter("w13_weight_scale", w13_weight_scale)
@@ -1384,8 +1392,9 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
                 intermediate_size_per_partition // self.quant_config.group_size,
                 dtype=weight_scale_dtype,
             ),
-            input_dim=1,
-            output_dim=2,
+            # Same axis convention as w2_weight.
+            input_dim=2,
+            output_dim=1,
             weight_loader=weight_loader,
         )
         layer.register_parameter("w2_weight_scale", w2_weight_scale)
@@ -2252,7 +2261,9 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfigBase):
         if isinstance(layer, LinearBase):
             if quant_algo == "FP8":
                 return ModelOptFp8LinearMethod(self.fp8_config)
-            if quant_algo == "NVFP4":
+            # Accept both NVFP4 and NVFP4_AWQ (AWQ variant uses the same linear
+            # method; pre_quant_scale is already registered as optional).
+            if quant_algo and quant_algo.startswith("NVFP4"):
                 return ModelOptNvFp4LinearMethod(self.nvfp4_config)
             # Layer not in quantized_layers — leave unquantized
             return UnquantizedLinearMethod()
@@ -2263,7 +2274,8 @@ class ModelOptMixedPrecisionConfig(ModelOptQuantConfigBase):
                     quant_config=self.fp8_config,
                     moe_config=layer.moe_config,
                 )
-            if quant_algo == "NVFP4":
+            # Accept both NVFP4 and NVFP4_AWQ for FusedMoE too.
+            if quant_algo and quant_algo.startswith("NVFP4"):
                 return ModelOptNvFp4FusedMoE(
                     quant_config=self.nvfp4_config,
                     moe_config=layer.moe_config,
